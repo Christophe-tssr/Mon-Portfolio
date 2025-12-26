@@ -7,9 +7,9 @@ Techniciens Supérieur Systèmes & Réseaux junior, autonome sur les bases et mo
 
 ## Virtualisation & Cloud
 
--Proxmox, VMware ESXi
--Notions de clustering et haute disponibilité
--Azure AD,  SharePoint, environnement hybride
+- Proxmox, VMware ESXi
+- Notions de clustering et haute disponibilité
+- Azure AD,  SharePoint, environnement hybride
 
 ## Administration Windows
 
