@@ -43,14 +43,14 @@ Techniciens Supérieur Systèmes & Réseaux junior, autonome sur les bases et mo
 - Déploiement via GPO, notions Ansible
 - Bases Docker, déploiement de services conteneurisés
 
+## Gestion de parc & ITSM
+- Installation, préparation et gestion de parc informatique
+- GLPI, Jira
+
 ## Coursera
 
 - Gestion de projet Google (En Cours)
 - Zabbix (Fini)
 - 
-
-## Gestion de parc & ITSM
-- Installation, préparation et gestion de parc informatique
-- GLPI, Jira
 
 ## Projet GitHub
