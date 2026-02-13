@@ -49,7 +49,8 @@ Techniciens Supérieur Systèmes & Réseaux junior, autonome sur les bases et mo
 
 ## Coursera
 
-- Gestion de projet Google (En Cours)
+- Gestion de projet - Google (En Cours)
+- Introduction à l'IA - Google
 - Zabbix (Fini)
 - 
 
