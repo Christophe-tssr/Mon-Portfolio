@@ -1,0 +1,288 @@
+# **Déploiement de règles UFW avec Ansible**
+
+*Documentation technique – Automatisation du pare-feu de SrvZabbix et SrvCloud*
+
+## **1\. Présentation**
+
+Cette documentation décrit le déploiement automatisé de règles de pare-feu **UFW** sur deux serveurs Debian 13 avec **Ansible**, depuis le serveur de supervision Zabbix.
+
+| Serveur | Rôle | Adresse IP |
+| :---- | :---- | :---- |
+| SrvZabbix | Serveur de supervision et machine de contrôle Ansible | 192.168.20.21 |
+| SrvCloud | Serveur cible, supervisé par Zabbix | 192.168.20.20 |
+
+**Pourquoi Ansible ?**
+
+* **Sans agent** : installé uniquement sur SrvZabbix, il se connecte aux cibles en SSH  
+* **Idempotent** : relancer le playbook ne change rien si la configuration est déjà en place  
+* **Reproductible** : la même configuration s'applique à N serveurs avec une seule commande  
+* **Lisible et versionnable** : les règles sont décrites dans des fichiers texte
+
+## **2\. Règles à déployer**
+
+| Règle | SrvZabbix | SrvCloud |
+| :---- | :---- | :---- |
+| SSH (22) | Autorisé depuis 192.168.20.0/24 | Autorisé depuis 192.168.20.0/24 |
+| HTTP (80) | Autorisé depuis 192.168.20.0/24 (interface Zabbix) | Autorisé |
+| HTTPS (443) | Refusé | Autorisé |
+| Zabbix agent (10050) | Selon besoin | Autorisé depuis SrvZabbix |
+| Zabbix server (10051) | Autorisé depuis SrvCloud | Refusé |
+| MariaDB (3306) | Autorisé depuis SrvCloud | Refusé |
+
+Politique par défaut sur les deux serveurs : **trafic entrant refusé, trafic sortant autorisé**.
+
+## **3\. Prérequis**
+
+* Deux serveurs Debian 13 joignables sur le réseau 192.168.20.0/24  
+* Un utilisateur disposant des droits sudo sur chaque cible (ici christophe sur SrvCloud)  
+* Un accès root ou sudo sur SrvZabbix
+
+## **4\. Installation d'Ansible (sur SrvZabbix)**
+
+sudo apt install \-y ansible  
+ansible-galaxy collection install community.general  
+ansible \--version  
+Le module ufw provient de la collection community.general, déjà incluse avec le paquet Debian ansible complet.
+
+## **5\. Préparation de SrvCloud**
+
+Sur **SrvCloud**, en root :
+
+apt install \-y openssh-server sudo  
+systemctl enable \--now ssh  
+usermod \-aG sudo christophe  
+id christophe  
+python3 \--version
+
+| Élément | Utilité |
+| :---- | :---- |
+| openssh-server | Permet à Ansible de se connecter |
+| sudo et groupe sudo | Donne les droits administrateur à l'utilisateur |
+| python3 | Requis par Ansible sur la cible, présent par défaut sur Debian |
+
+Test du sudo depuis SrvZabbix (l'option \-t ouvre un terminal pour saisir le mot de passe) :
+
+ssh \-t christophe@192.168.20.20 "sudo \-l"  
+La sortie doit contenir (ALL : ALL) ALL.
+
+## **6\. Authentification par clé SSH**
+
+Une clé SSH fonctionne comme une serrure et sa clé :
+
+* la **clé privée** reste sur SrvZabbix et n'est jamais partagée  
+* la **clé publique** est copiée sur SrvCloud (fichier authorized\_keys)
+
+À chaque connexion, SrvCloud vérifie que la clé privée correspond à la clé publique qu'il connaît et autorise l'accès sans mot de passe.
+
+**Étape 1 : créer la paire de clés sur SrvZabbix**
+
+ssh-keygen \-t ed25519  
+Valider les questions avec Entrée. Deux fichiers sont créés : /root/.ssh/id\_ed25519 (privée) et /root/.ssh/id\_ed25519.pub (publique).
+
+**Étape 2 : copier la clé publique vers SrvCloud**
+
+ssh-copy-id christophe@192.168.20.20  
+Répondre yes à la question sur l'empreinte, puis saisir le mot de passe de christophe sur SrvCloud.
+
+**Étape 3 : tester**
+
+ssh christophe@192.168.20.20  
+La connexion doit s'établir sans mot de passe. Taper exit pour revenir.
+
+## **7\. Projet Ansible**
+
+Arborescence dans \~/ansible sur SrvZabbix :
+
+mkdir \-p \~/ansible/group\_vars && cd \~/ansible
+
+ansible/  
+├── inventory.ini  
+├── ufw.yml  
+└── group\_vars/  
+    ├── all.yml  
+    ├── zabbix\_server.yml  
+    └── cloud\_server.yml
+
+### **7.1 Inventaire (inventory.ini)**
+
+\[zabbix\_server\]  
+srvzabbix ansible\_connection=local
+
+\[cloud\_server\]  
+srvcloud ansible\_host=192.168.20.20 ansible\_user=christophe
+
+\[all:vars\]  
+ansible\_python\_interpreter=/usr/bin/python3  
+ansible\_connection=local indique qu'Ansible agit directement sur la machine locale, sans SSH. Les groupes zabbix\_server et cloud\_server permettent d'associer des règles différentes à chaque serveur.
+
+### **7.2 Variables communes (group\_vars/all.yml)**
+
+admin\_network: "192.168.20.0/24"  
+srvzabbix\_ip: "192.168.20.21"  
+srvcloud\_ip: "192.168.20.20"
+
+### **7.3 Règles de SrvZabbix (group\_vars/zabbix\_server.yml)**
+
+ufw\_rules:  
+  \- { port: "22",    proto: tcp, src: "{{ admin\_network }}", comment: "SSH" }  
+  \- { port: "80",    proto: tcp, src: "{{ admin\_network }}", comment: "Interface web Zabbix" }  
+  \- { port: "10051", proto: tcp, src: "{{ srvcloud\_ip }}",   comment: "Zabbix server (agents)" }  
+  \- { port: "3306",  proto: tcp, src: "{{ srvcloud\_ip }}",   comment: "MariaDB depuis SrvCloud" }
+
+### **7.4 Règles de SrvCloud (group\_vars/cloud\_server.yml)**
+
+ufw\_rules:  
+  \- { port: "22",    proto: tcp, src: "{{ admin\_network }}", comment: "SSH" }  
+  \- { port: "80",    proto: tcp,                             comment: "HTTP" }  
+  \- { port: "443",   proto: tcp,                             comment: "HTTPS" }  
+  \- { port: "10050", proto: tcp, src: "{{ srvzabbix\_ip }}",  comment: "Zabbix agent depuis SrvZabbix" }
+
+### **7.5 Playbook (ufw.yml)**
+
+\---  
+\- name: Installation et configuration d'UFW  
+  hosts: all  
+  become: true
+
+  tasks:  
+    \- name: Installer UFW  
+      ansible.builtin.apt:  
+        name: ufw  
+        state: present  
+        update\_cache: true
+
+    \- name: Autoriser les règles avant l'activation  
+      community.general.ufw:  
+        rule: allow  
+        port: "{{ item.port }}"  
+        proto: "{{ item.proto }}"  
+        src: "{{ item.src \| default('any') }}"  
+        comment: "{{ item.comment }}"  
+      loop: "{{ ufw\_rules }}"
+
+    \- name: Refuser le trafic entrant par défaut  
+      community.general.ufw:  
+        default: deny  
+        direction: incoming
+
+    \- name: Autoriser le trafic sortant par défaut  
+      community.general.ufw:  
+        default: allow  
+        direction: outgoing
+
+    \- name: Activer UFW  
+      community.general.ufw:  
+        state: enabled
+
+    \- name: Activer UFW au démarrage  
+      ansible.builtin.service:  
+        name: ufw  
+        enabled: true  
+Points importants :
+
+* hosts: all : le même playbook sert pour tous les serveurs, c'est le fichier group\_vars du groupe qui fournit les règles  
+* les règles SSH sont posées **avant** l'activation du pare-feu pour ne pas se couper l'accès  
+* si src n'est pas défini pour une règle, elle s'applique à toutes les sources (any)  
+* le module ajoute des règles mais n'en supprime jamais : voir la section 8.4 pour repartir d'une base propre
+
+## **8\. Exécution**
+
+Toutes les commandes se lancent depuis \~/ansible sur SrvZabbix.
+
+### **8.1 Tester la connexion**
+
+ansible \-i inventory.ini cloud\_server \-m ping  
+ansible-inventory \-i inventory.ini \--graph  
+Résultat attendu : "ping": "pong", et les deux groupes visibles dans le graphe.
+
+### **8.2 Vérifier la syntaxe**
+
+ansible-playbook \-i inventory.ini ufw.yml \--syntax-check
+
+### **8.3 Déployer sur SrvCloud**
+
+ansible-playbook \-i inventory.ini ufw.yml \--limit cloud\_server \--ask-become-pass  
+Le mot de passe demandé (BECOME password) est celui de christophe pour sudo sur SrvCloud. Le récapitulatif doit afficher failed=0.
+
+### **8.4 Déployer sur SrvZabbix**
+
+Les règles déjà présentes ne sont pas supprimées par le module. Pour repartir d'une base propre sur le serveur local :
+
+ufw \--force reset  
+ansible-playbook \-i inventory.ini ufw.yml \--limit zabbix\_server  
+ufw \--force reset supprime toutes les règles et désactive UFW ; le playbook réapplique ensuite la configuration complète.
+
+### **8.5 Test d'idempotence**
+
+Relancer le même déploiement : le récapitulatif doit afficher changed=0, ce qui prouve que la configuration est déjà conforme.
+
+## **9\. Vérifications**
+
+Sur SrvCloud :
+
+ssh \-t christophe@192.168.20.20 "sudo ufw status verbose"  
+Résultat attendu :
+
+* Status: active  
+* Default: deny (incoming), allow (outgoing)  
+* 22/tcp autorisé depuis 192.168.20.0/24  
+* 80/tcp et 443/tcp autorisés depuis partout  
+* 10050/tcp autorisé depuis 192.168.20.21
+
+Sur SrvZabbix : sudo ufw status verbose, puis test de l'interface web sur http\://192.168.20.21/zabbix.
+
+Test de l'accès SSH après activation du pare-feu :
+
+ansible \-i inventory.ini cloud\_server \-m ping
+
+## **10\. Dépannage**
+
+| Symptôme | Cause | Solution |
+| :---- | :---- | :---- |
+| Connection refused sur le port 22 | Serveur SSH absent sur la cible | apt install \-y openssh-server sur la cible |
+| Permission denied (publickey,password) | Clé publique non installée sur la cible | ssh-copy-id christophe@192.168.20.20 |
+| No hosts matched, nothing to do | Mauvais dossier, groupe absent de l'inventaire ou hosts: inadapté dans le playbook | Se placer dans \~/ansible, vérifier avec ansible-inventory \-i inventory.ini \--graph, contrôler que le playbook contient hosts: all |
+| christophe n'est pas dans le fichier sudoers | Utilisateur sans droits sudo | En root sur la cible : apt install \-y sudo puis usermod \-aG sudo christophe |
+| sudo: un terminal est requis pour lire le mot de passe | Commande SSH lancée sans terminal | Ajouter l'option : ssh \-t ... |
+| Failed to find required executable "ufw" en mode \--check | UFW non installé pendant la simulation | Normal, lancer sans \--check |
+| Variable ufw\_rules non définie | Fichier group\_vars absent ou mal nommé | Les noms doivent correspondre aux groupes de l'inventaire (cloud\_server.yml, zabbix\_server.yml) |
+| Interface web inaccessible après UFW | Mauvais réseau dans admin\_network | Corriger la valeur, ufw \--force reset, relancer le playbook |
+| Erreur de syntaxe YAML | Tabulation ou indentation incorrecte | Utiliser uniquement des espaces, vérifier avec \--syntax-check |
+
+**En cas de blocage par le pare-feu :** depuis la console locale du serveur, sudo ufw disable rouvre tous les ports le temps de corriger la configuration.
+
+## **11\. Aide-mémoire**
+
+| Action | Commande |
+| :---- | :---- |
+| Tester la connexion | ansible \-i inventory.ini all \-m ping |
+| Voir les groupes | ansible-inventory \-i inventory.ini \--graph |
+| Vérifier la syntaxe | ansible-playbook \-i inventory.ini ufw.yml \--syntax-check |
+| Déployer sur un groupe | ansible-playbook \-i inventory.ini ufw.yml \--limit cloud\_server \--ask-become-pass |
+| Simuler avec détail des changements | ansible-playbook \-i inventory.ini ufw.yml \--check \--diff |
+| Voir les règles UFW | sudo ufw status verbose |
+| Réinitialiser UFW | sudo ufw \--force reset |
+| Désactiver UFW (secours) | sudo ufw disable |
+
+## **12\. Pour aller plus loin**
+
+* **Ajouter un serveur** : l'ajouter à l'inventaire, créer le fichier group\_vars de son groupe, copier la clé SSH, puis lancer le playbook  
+* **Ajouter une règle** : ajouter une ligne dans ufw\_rules du groupe concerné et relancer le playbook  
+* **Protéger les secrets** : utiliser ansible-vault plutôt que des mots de passe en clair  
+* **Versionner** : placer le dossier \~/ansible dans un dépôt Git  
+* **Sécuriser SSH** : désactiver la connexion root et l'authentification par mot de passe une fois les clés en place  
+* **Superviser SrvCloud** : installer zabbix-agent2 sur SrvCloud (Server=192.168.20.21 dans /etc/zabbix/zabbix\_agent2.conf) et ajouter l'hôte dans Zabbix ; la règle du port 10050 est déjà en place
+
+## **13\. Informations du déploiement**
+
+| Élément | Valeur |
+| :---- | :---- |
+| Machine de contrôle | SrvZabbix (192.168.20.21) |
+| Cible | SrvCloud (192.168.20.20) |
+| Version d'Ansible | *2.19.11* |
+| Version Debian | 13 (Trixie) |
+| Utilisateur de déploiement | christophe |
+| Date du déploiement | *26/11/2026* |
+| Auteur | *Davigny Christophe* |
+
+
